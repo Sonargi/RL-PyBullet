@@ -6,33 +6,35 @@ import numpy as np
 from collections import deque
 
 class LaserScan2D:
-    def __init__(self, parent_body, range_max=10, resolution=360):
+    def __init__(self, parent_body, range_max=10, resolution=60):  # Reduced resolution
         self.parent_body = parent_body
         self.range_max = range_max
         self.resolution = resolution
         self.angle_step = 2 * math.pi / resolution
-        self.recent_scans = deque(maxlen=5)  # Store recent 5 scans
+        self.recent_scans = deque(maxlen=5)
+        self.ray_from = []
+        self.ray_to = []
+        self._precompute_rays()
+
+    def _precompute_rays(self):
+        for i in range(self.resolution):
+            angle = i * self.angle_step
+            self.ray_from.append([0, 0, 0])
+            self.ray_to.append([
+                self.range_max * math.cos(angle),
+                self.range_max * math.sin(angle),
+                0
+            ])
 
     def scan(self):
-        parent_pos, parent_orn = p.getBasePositionAndOrientation(self.parent_body)
-        parent_euler = p.getEulerFromQuaternion(parent_orn)
+        pos, orn = p.getBasePositionAndOrientation(self.parent_body)
+        ray_from = [list(map(lambda x, y: x + y, pos, ray)) for ray in self.ray_from]
+        ray_to = [list(map(lambda x, y: x + y, pos, ray)) for ray in self.ray_to]
 
-        scan_data = []
-        for i in range(self.resolution):
-            angle = i * self.angle_step + parent_euler[2]
-            ray_to = [
-                parent_pos[0] + self.range_max * math.cos(angle),
-                parent_pos[1] + self.range_max * math.sin(angle),
-                parent_pos[2]
-            ]
+        results = p.rayTestBatch(ray_from, ray_to)
 
-            result = p.rayTest(parent_pos, ray_to)[0]
-            hit_fraction = result[2]
-            distance = hit_fraction * self.range_max
-
-            scan_data.append(distance)
-
-        self.recent_scans.append((parent_pos, parent_euler[2], scan_data))
+        scan_data = [result[2] * self.range_max for result in results]
+        self.recent_scans.append((pos, p.getEulerFromQuaternion(orn)[2], scan_data))
         return scan_data
 
     def get_recent_scans(self):
@@ -99,7 +101,7 @@ def visualize_laser_scan_data(laser_scanner):
         color = [(5 - scan_index) / 5, 0, scan_index / 5]  # Color gradient from red to blue
         for i, distance in enumerate(scan_data):
             if distance < 10:  # Only draw if there's a hit within range
-                angle = i * (2 * math.pi / len(scan_data)) + robot_yaw
+                angle = i * laser_scanner.angle_step + robot_yaw
                 end_pos = [
                     robot_pos[0] + distance * math.cos(angle),
                     robot_pos[1] + distance * math.sin(angle),
@@ -115,7 +117,7 @@ def main():
 
     create_arena(size=4)
     robot = create_circular_robot()
-    laser_scanner = LaserScan2D(robot, range_max=10, resolution=360)
+    laser_scanner = LaserScan2D(robot, range_max=10, resolution=60)  # Reduced resolution
 
     p.resetDebugVisualizerCamera(cameraDistance=5, cameraYaw=0, cameraPitch=-45, cameraTargetPosition=[0, 0, 0])
 
@@ -125,6 +127,8 @@ def main():
     trail = []
 
     while True:
+        start_time = time.time()
+
         linear_velocity = p.readUserDebugParameter(linear_velocity_slider)
         angular_velocity = p.readUserDebugParameter(angular_velocity_slider)
 
@@ -138,11 +142,21 @@ def main():
         for i in range(1, len(trail)):
             p.addUserDebugLine(trail[i-1], trail[i], [0, 1, 0], lifeTime=0.1)
 
+        start_laser_time = time.time()
         laser_scanner.scan()
+        laser_scan_time = time.time()-start_laser_time
+        finish_scan_time = time.time()
+        print(f"laser scan time: {laser_scan_time}")
         visualize_laser_scan_data(laser_scanner)
+        laser_viz_time = time.time()-finish_scan_time
+        print(f"laser viz time: {laser_viz_time}")
 
         p.stepSimulation()
-        time.sleep(1/240)
+
+        # Limit the frame rate to 60 FPS
+        elapsed = time.time() - start_time
+        if elapsed < 1/60:
+            time.sleep(1/60 - elapsed)
 
 if __name__ == "__main__":
     main()
